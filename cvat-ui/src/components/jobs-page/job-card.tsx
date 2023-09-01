@@ -12,6 +12,7 @@ import Dropdown from 'antd/lib/dropdown';
 import { useCardHeightHOC } from 'utils/hooks';
 import Preview from 'components/common/preview';
 import JobActionsMenu from 'components/job-item/job-actions-menu';
+import { JobState } from 'cvat-core-wrapper';
 
 const useCardHeight = useCardHeightHOC({
     containerClassName: 'cvat-jobs-page',
@@ -38,6 +39,7 @@ function JobCardComponent(props: Props): JSX.Element {
             history.push(url);
         }
     };
+    const jobStatusStyleColors = [{ 'color': '#c1c1c1' }, { 'color': '#1890ff' }, { 'color': '#52c41a' }, { 'color': '#ff4d4f' }];
 
     return (
         <Card
@@ -65,7 +67,7 @@ function JobCardComponent(props: Props): JSX.Element {
         >
             <Descriptions column={1} size='small'>
                 <Descriptions.Item label='Stage'>{job.stage}</Descriptions.Item>
-                <Descriptions.Item label='State'>{job.state}</Descriptions.Item>
+                <Descriptions.Item label='State' contentStyle={jobStatusStyleColors[Object.values(JobState).indexOf(job.state)]}>{job.state}</Descriptions.Item>
                 { expanded ? (
                     <Descriptions.Item label='Size'>{job.stopFrame - job.startFrame + 1}</Descriptions.Item>
                 ) : null}
