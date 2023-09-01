@@ -22,7 +22,7 @@ import {
 } from '@ant-design/icons/lib/icons';
 import { DurationIcon, FramesIcon } from 'icons';
 import {
-    Job, JobStage, JobType, Task, User,
+    Job, JobStage, JobState, JobType, Task, User,
 } from 'cvat-core-wrapper';
 import { useIsMounted } from 'utils/hooks';
 import UserSelector from 'components/task-page/user-selector';
@@ -113,6 +113,7 @@ function JobItem(props: Props): JSX.Element {
     }
     const frameCountPercent = ((job.frameCount / (task.size || 1)) * 100).toFixed(0);
     const frameCountPercentRepresentation = frameCountPercent === '0' ? '<1' : frameCountPercent;
+    const jobStatusTypesColors = ['secondary', 'warning', 'success', 'danger'];
     return (
         <Col span={24}>
             <Card className='cvat-job-item' style={{ ...style }} data-row-id={job.id}>
@@ -202,7 +203,7 @@ function JobItem(props: Props): JSX.Element {
                                     <Col>
                                         <ProjectOutlined />
                                         <Text>State: </Text>
-                                        <Text type='secondary' className='cvat-job-item-state'>
+                                        <Text type={`${jobStatusTypesColors[Object.values(JobState).indexOf(job.state)]}`} className='cvat-job-item-state'>
                                             {`${job.state.charAt(0).toUpperCase() + job.state.slice(1)}`}
                                         </Text>
                                     </Col>
