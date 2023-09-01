@@ -43,6 +43,19 @@
             margin-top: $grid-unit-size;
         }
 
+        .ant-typography-secondary {
+            color: #c1c1c1;
+        }
+        .ant-typography-success {
+            color: #52c41a;
+        }
+        .ant-typography-warning {
+            color: #1890ff;
+        }
+        .ant-typography-danger {
+            color: #ff4d4f;
+        }
+
         .anticon {
             margin-right: $grid-unit-size;
         }
