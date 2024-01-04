@@ -1,0 +1,4 @@
+services:
+  cvat_server:
+    volumes:
+      - ./cvat/settings/base.py:/home/django/cvat/settings/base.py:ro
