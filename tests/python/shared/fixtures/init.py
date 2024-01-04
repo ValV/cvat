@@ -287,23 +287,26 @@ def delete_compose_files(container_name_files):
         filename.unlink(missing_ok=True)
 
 
-def wait_for_services():
-    for i in range(300):
+def wait_for_services(num_secs: int = 300) -> None:
+    for i in range(num_secs):
         logger.debug(f"waiting for the server to load ... ({i})")
         response = requests.get(get_server_url("api/server/health/", format="json"))
-        if response.status_code == HTTPStatus.OK:
-            logger.debug("the server has finished loading!")
-            return
-        else:
-            try:
-                statuses = response.json()
-                logger.debug(f"server status: \n{statuses}")
-            except Exception as e:
-                logger.debug(f"an error occurred during the server status checking: {e}")
+
+        try:
+            statuses = response.json()
+            logger.debug(f"server status: \n{statuses}")
+
+            if response.status_code == HTTPStatus.OK:
+                logger.debug("the server has finished loading!")
+                return
+
+        except Exception as e:
+            logger.debug(f"an error occurred during the server status checking: {e}")
+
         sleep(1)
 
     raise Exception(
-        "Failed to reach the server during the specified period. Please check the configuration."
+        f"Failed to reach the server during {num_secs} seconds. Please check the configuration."
     )
 
 
@@ -359,7 +362,11 @@ def stop_services(dc_files, cvat_root_dir=CVAT_ROOT_DIR):
 
 
 def session_start(
-    session, cvat_root_dir=CVAT_ROOT_DIR, cvat_db_dir=CVAT_DB_DIR, extra_dc_files=None
+    session,
+    cvat_root_dir=CVAT_ROOT_DIR,
+    cvat_db_dir=CVAT_DB_DIR,
+    extra_dc_files=None,
+    waiting_time=300,
 ):
     stop = session.config.getoption("--stop-services")
     start = session.config.getoption("--start-services")
@@ -393,13 +400,16 @@ def session_start(
             cvat_root_dir,
             cvat_db_dir,
             extra_dc_files,
+            waiting_time,
         )
 
     elif platform == "kube":
         kube_start(cvat_db_dir)
 
 
-def local_start(start, stop, dumpdb, cleanup, rebuild, cvat_root_dir, cvat_db_dir, extra_dc_files):
+def local_start(
+    start, stop, dumpdb, cleanup, rebuild, cvat_root_dir, cvat_db_dir, extra_dc_files, waiting_time
+):
     if start and stop:
         raise Exception("--start-services and --stop-services are incompatible")
 
@@ -425,16 +435,13 @@ def local_start(start, stop, dumpdb, cleanup, rebuild, cvat_root_dir, cvat_db_di
         stop_services(dc_files, cvat_root_dir)
         pytest.exit("All testing containers are stopped", returncode=0)
 
-    if (
-        not any(set(running_containers()) & {f"{PREFIX}_cvat_server_1", f"{PREFIX}_cvat_db_1"})
-        or rebuild
-    ):
-        start_services(dc_files, rebuild, cvat_root_dir)
+    start_services(dc_files, rebuild, cvat_root_dir)
 
     docker_restore_data_volumes()
     docker_cp(cvat_db_dir / "restore.sql", f"{PREFIX}_cvat_db_1:/tmp/restore.sql")
     docker_cp(cvat_db_dir / "data.json", f"{PREFIX}_cvat_server_1:/tmp/data.json")
-    wait_for_services()
+
+    wait_for_services(waiting_time)
 
     docker_exec_cvat("python manage.py loaddata /tmp/data.json")
     docker_exec(

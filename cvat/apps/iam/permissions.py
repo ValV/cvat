@@ -9,6 +9,7 @@ import operator
 from abc import ABCMeta, abstractmethod
 from collections import namedtuple
 from enum import Enum
+from importlib import import_module
 from typing import Any, Dict, List, Optional, Sequence, Union, cast
 
 from attrs import define, field
@@ -53,7 +54,7 @@ class PermissionResult:
 
 def get_organization(request, obj):
     # Try to get organization from an object otherwise, return the organization that is specified in query parameters
-    if obj is not None and isinstance(obj, Organization):
+    if isinstance(obj, Organization):
         return obj
 
     if obj:
@@ -62,7 +63,7 @@ def get_organization(request, obj):
         except AttributeError as exc:
             # Skip initialization of organization for those objects that don't related with organization
             view = request.parser_context.get('view')
-            if view and view.basename in ('user', 'function', 'request', 'server'):
+            if view and view.basename in settings.OBJECTS_NOT_RELATED_WITH_ORG:
                 return request.iam_context['organization']
 
             raise exc
@@ -84,23 +85,22 @@ def get_membership(request, organization):
         is_active=True
     ).first()
 
+
 def get_iam_context(request, obj):
     organization = get_organization(request, obj)
     membership = get_membership(request, organization)
 
-    if organization and not request.user.is_superuser and membership is None:
+    iam_context = dict()
+    for builder_func_path in settings.IAM_CONTEXT_BUILDERS:
+        package, attr = builder_func_path.rsplit('.', 1)
+        builder_func = getattr(import_module(package), attr)
+        iam_context.update(builder_func(request, organization, membership))
+
+    # FIXME: The primary app should know nothing about is_crowdsourcing plugin.
+    if organization and not request.user.is_superuser and membership is None and not iam_context.get('is_crowdsourcing', False):
         raise PermissionDenied({'message': 'You should be an active member in the organization'})
 
-    return {
-        'user_id': request.user.id,
-        'group_name': request.iam_context['privilege'],
-        'org_id': getattr(organization, 'id', None),
-        'org_slug': getattr(organization, 'slug', None),
-        'org_owner_id': getattr(organization.owner, 'id', None)
-            if organization else None,
-        'org_role': getattr(membership, 'role', None),
-    }
-
+    return iam_context
 
 class OpenPolicyAgentPermission(metaclass=ABCMeta):
     url: str
@@ -1202,7 +1202,6 @@ class JobPermission(OpenPolicyAgentPermission):
         IMPORT_ANNOTATIONS = 'import:annotations'
         EXPORT_ANNOTATIONS = 'export:annotations'
         EXPORT_DATASET = 'export:dataset'
-        VIEW_COMMITS = 'view:commits'
         VIEW_DATA = 'view:data'
         VIEW_METADATA = 'view:metadata'
         UPDATE_METADATA = 'update:metadata'
@@ -1293,7 +1292,6 @@ class JobPermission(OpenPolicyAgentPermission):
             ('metadata','GET'): Scopes.VIEW_METADATA,
             ('metadata','PATCH'): Scopes.UPDATE_METADATA,
             ('issues', 'GET'): Scopes.VIEW,
-            ('commits', 'GET'): Scopes.VIEW_COMMITS,
             ('dataset_export', 'GET'): Scopes.EXPORT_DATASET,
             ('preview', 'GET'): Scopes.VIEW,
         }.get((view.action, request.method))
@@ -1944,6 +1942,13 @@ class QualitySettingPermission(OpenPolicyAgentPermission):
                     permissions.append(TaskPermission.create_base_perm(
                         request, view, iam_context=iam_context, scope=task_scope, obj=obj.task
                     ))
+                elif scope == cls.Scopes.LIST:
+                    if task_id := request.query_params.get("task_id", None):
+                        permissions.append(TaskPermission.create_scope_view(
+                            request, int(task_id), iam_context=iam_context,
+                        ))
+
+                    permissions.append(cls.create_scope_list(request, iam_context))
                 else:
                     permissions.append(cls.create_base_perm(request, view, scope, iam_context, obj))
 

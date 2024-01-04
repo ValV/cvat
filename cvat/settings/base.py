@@ -15,11 +15,8 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/2.0/ref/settings/
 """
 
-import fcntl
 import mimetypes
 import os
-import shutil
-import subprocess
 import sys
 import tempfile
 from datetime import timedelta
@@ -35,6 +32,8 @@ from cvat import __version__
 mimetypes.add_type("application/wasm", ".wasm", True)
 
 from pathlib import Path
+
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = str(Path(__file__).parents[2])
@@ -83,56 +82,6 @@ try:
 except ModuleNotFoundError:
     generate_secret_key()
     from keys.secret_key import SECRET_KEY
-
-
-def generate_ssh_keys():
-    keys_dir = '{}/keys'.format(os.getcwd())
-    ssh_dir = '{}/.ssh'.format(os.getenv('HOME'))
-    pidfile = os.path.join(keys_dir, 'ssh.pid')
-
-    def add_ssh_keys():
-        IGNORE_FILES = ('README.md',)
-        keys_to_add = [entry.name for entry in os.scandir(ssh_dir) if entry.name not in IGNORE_FILES]
-        keys_to_add = ' '.join(os.path.join(ssh_dir, f) for f in keys_to_add)
-        subprocess.run(['ssh-add {}'.format(keys_to_add)], # nosec
-            shell=True,
-            stderr = subprocess.PIPE,
-            # lets set the timeout if ssh-add requires a input passphrase for key
-            # otherwise the process will be freezed
-            timeout=30,
-            )
-
-    with open(pidfile, "w") as pid:
-        fcntl.flock(pid, fcntl.LOCK_EX)
-        try:
-            add_ssh_keys()
-            keys = subprocess.run(['ssh-add', '-l'], # nosec
-                stdout = subprocess.PIPE).stdout.decode('utf-8').split('\n')
-            if 'has no identities' in keys[0]:
-                print('SSH keys were not found')
-                volume_keys = os.listdir(keys_dir)
-                if not ('id_rsa' in volume_keys and 'id_rsa.pub' in volume_keys):
-                    print('New pair of keys are being generated')
-                    subprocess.run(['ssh-keygen -b 4096 -t rsa -f {}/id_rsa -q -N ""'.format(ssh_dir)], shell=True) # nosec
-                    shutil.copyfile('{}/id_rsa'.format(ssh_dir), '{}/id_rsa'.format(keys_dir))
-                    shutil.copymode('{}/id_rsa'.format(ssh_dir), '{}/id_rsa'.format(keys_dir))
-                    shutil.copyfile('{}/id_rsa.pub'.format(ssh_dir), '{}/id_rsa.pub'.format(keys_dir))
-                    shutil.copymode('{}/id_rsa.pub'.format(ssh_dir), '{}/id_rsa.pub'.format(keys_dir))
-                else:
-                    print('Copying them from keys volume')
-                    shutil.copyfile('{}/id_rsa'.format(keys_dir), '{}/id_rsa'.format(ssh_dir))
-                    shutil.copymode('{}/id_rsa'.format(keys_dir), '{}/id_rsa'.format(ssh_dir))
-                    shutil.copyfile('{}/id_rsa.pub'.format(keys_dir), '{}/id_rsa.pub'.format(ssh_dir))
-                    shutil.copymode('{}/id_rsa.pub'.format(keys_dir), '{}/id_rsa.pub'.format(ssh_dir))
-                subprocess.run(['ssh-add', '{}/id_rsa'.format(ssh_dir)]) # nosec
-        finally:
-            fcntl.flock(pid, fcntl.LOCK_UN)
-
-try:
-    if os.getenv("SSH_AUTH_SOCK", None):
-        generate_ssh_keys()
-except Exception as ex:
-    print(str(ex))
 
 DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
 INSTALLED_APPS = [
@@ -285,7 +234,14 @@ TEMPLATES = [
 # IAM settings
 IAM_TYPE = 'BASIC'
 IAM_BASE_EXCEPTION = None # a class which will be used by IAM to report errors
-IAM_DEFAULT_ROLES = ['user']
+
+# FIXME: There are several ways to "replace" default IAM role.
+# One of them is to assign groups when you create a user inside Crowdsourcing plugin and don't add more groups
+# if user.groups field isn't empty.
+# the function should be in uppercase to able get access from django.conf.settings
+def GET_IAM_DEFAULT_ROLES(user) -> list:
+    return ['user']
+
 IAM_ADMIN_ROLE = 'admin'
 # Index in the list below corresponds to the priority (0 has highest priority)
 IAM_ROLES = [IAM_ADMIN_ROLE, 'business', 'user', 'worker']
@@ -294,8 +250,13 @@ IAM_OPA_DATA_URL = f'{IAM_OPA_HOST}/v1/data'
 LOGIN_URL = 'rest_login'
 LOGIN_REDIRECT_URL = '/'
 
+OBJECTS_NOT_RELATED_WITH_ORG = ['user', 'function', 'request', 'server',]
+# FIXME: It looks like an internal function of IAM app.
+IAM_CONTEXT_BUILDERS = ['cvat.apps.iam.utils.build_iam_context',]
+
 # ORG settings
 ORG_INVITATION_CONFIRM = 'No'
+ORG_INVITATION_EXPIRY_DAYS = 7
 
 
 AUTHENTICATION_BACKENDS = [
@@ -691,6 +652,7 @@ SPECTACULAR_SETTINGS = {
     'SCHEMA_COERCE_PATH_PK_SUFFIX': True,
     'SCHEMA_PATH_PREFIX': '/api',
     'SCHEMA_PATH_PREFIX_TRIM': False,
+    'GENERIC_ADDITIONAL_PROPERTIES': None,
 }
 
 # set similar UI restrictions
@@ -713,6 +675,17 @@ CLICKHOUSE = {
     }
 }
 
+if (postgres_password_file := os.getenv('CVAT_POSTGRES_PASSWORD_FILE')) is not None:
+    if 'CVAT_POSTGRES_PASSWORD' in os.environ:
+        raise ImproperlyConfigured(
+            'The CVAT_POSTGRES_PASSWORD and CVAT_POSTGRES_PASSWORD_FILE'
+            ' environment variables must not be set at the same time'
+        )
+
+    postgres_password = Path(postgres_password_file).read_text(encoding='UTF-8').rstrip('\n')
+else:
+    postgres_password = os.getenv('CVAT_POSTGRES_PASSWORD', '')
+
 # Database
 # https://docs.djangoproject.com/en/3.2/ref/settings/#databases
 DATABASES = {
@@ -721,7 +694,7 @@ DATABASES = {
         'HOST': os.getenv('CVAT_POSTGRES_HOST', 'cvat_db'),
         'NAME': os.getenv('CVAT_POSTGRES_DBNAME', 'cvat'),
         'USER': os.getenv('CVAT_POSTGRES_USER', 'root'),
-        'PASSWORD': os.getenv('CVAT_POSTGRES_PASSWORD', ''),
+        'PASSWORD': postgres_password,
         'PORT': os.getenv('CVAT_POSTGRES_PORT', 5432),
     }
 }
@@ -730,7 +703,7 @@ BUCKET_CONTENT_MAX_PAGE_SIZE =  500
 
 IMPORT_CACHE_FAILED_TTL = timedelta(days=90)
 IMPORT_CACHE_SUCCESS_TTL = timedelta(hours=1)
-IMPORT_CACHE_CLEAN_DELAY = timedelta(hours=2)
+IMPORT_CACHE_CLEAN_DELAY = timedelta(hours=12)
 
 ASSET_MAX_SIZE_MB = 10
 ASSET_SUPPORTED_TYPES = ('image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf', )
@@ -738,3 +711,18 @@ ASSET_MAX_IMAGE_SIZE = 1920
 ASSET_MAX_COUNT_PER_GUIDE = 30
 
 SMOKESCREEN_ENABLED = True
+
+EXTRA_RULES_PATHS = []
+
+# By default, email backend is django.core.mail.backends.smtp.EmailBackend
+# But it won't work without additional configuration, so we set it to None
+# to check configuration and throw ImproperlyConfigured if thats a case
+EMAIL_BACKEND = None
+
+ONE_RUNNING_JOB_IN_QUEUE_PER_USER = strtobool(os.getenv('ONE_RUNNING_JOB_IN_QUEUE_PER_USER', 'false'))
+
+# How many chunks can be prepared simultaneously during task creation in case the cache is not used
+CVAT_CONCURRENT_CHUNK_PROCESSING = int(os.getenv('CVAT_CONCURRENT_CHUNK_PROCESSING', 1))
+
+from cvat.rq_patching import update_started_job_registry_cleanup
+update_started_job_registry_cleanup()
